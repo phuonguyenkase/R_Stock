@@ -1,0 +1,98 @@
+library(ggplot2)
+library(quantmod)
+library(rugarch)
+library(tseries)
+library(FinTS)
+library(forecast)
+library(xts)
+library(zoo)
+
+setwd("C:/Users/Admin/Downloads/Finance/FRM/GARCH VAR/Port4")
+getwd() 
+return.stock <-read.table("Port4.csv", header = TRUE, sep = ",")
+return.stock$Date <- as.Date(return.stock$Date, format = "%m/%d/%Y")
+
+#Define và coi
+returns.MVP <- xts(return.stock$MVP, order.by = return.stock$Date)
+plot(returns.MVP, main = "MVP Port Daily Return ", 
+     major.ticks = "years", minor.ticks = FALSE,
+     col = "lightblue", lwd = 1.5, ylim = c(-0.1,0.1))
+
+# GARCH ======================================================================
+spec.MVP <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0)))
+model.MVP <- ugarchfit(spec.MVP, data = returns.MVP)
+
+
+# Rolling forecast ============================================================
+n_options <- c(
+  floor(1877 * 0.60),
+  floor(1877 * 0.70),
+  floor(1877 * 0.75),
+  floor(1877 * 0.80))
+results <- list()
+
+for(i in seq_along(n_options)) {
+  cat("Đang chạy với n.start =", n_options[i], "\n")
+  roll <- ugarchroll(
+    spec = spec.MVP,
+    data = returns.MVP,
+    n.start = n_options[i],
+    refit.every = 15,
+    calculate.VaR = TRUE,
+    VaR.alpha = c(0.01, 0.05))
+  results[[i]] <- roll
+  cat("Hoàn thành!\n\n")}
+names(results) <- paste0("nstart_", c("60pct", "70pct", "75pct", "80pct"))
+
+#VaR
+calculate_VaR_metrics.MVP <- function(roll_object) {
+  daily_VaR_1pct <- roll_object@forecast[["VaR"]][["alpha(1%)"]]
+  daily_VaR_5pct <- roll_object@forecast[["VaR"]][["alpha(5%)"]]
+  annual_VaR_1pct <- daily_VaR_1pct * sqrt(250)
+  annual_VaR_5pct <- daily_VaR_5pct * sqrt(250)
+  
+  VaR_summary <- data.frame(
+    Metric = c("Daily VaR 1%", "Daily VaR 5%", "Annual VaR 1%", "Annual VaR 5%"),
+    VaR = c(
+      mean(daily_VaR_1pct, na.rm = TRUE),
+      mean(daily_VaR_5pct, na.rm = TRUE),
+      mean(annual_VaR_1pct, na.rm = TRUE),
+      mean(annual_VaR_5pct, na.rm = TRUE)))
+  return(list(
+    daily_VaR_1pct = daily_VaR_1pct,
+    daily_VaR_5pct = daily_VaR_5pct,
+    annual_VaR_1pct = annual_VaR_1pct,
+    annual_VaR_5pct = annual_VaR_5pct,
+    summary = VaR_summary
+  ))
+}
+VaR_results <- calculate_VaR_metrics.MVP(roll)
+print(VaR_results$summary)
+
+# Check với VaR còn lại =======================================================
+print(cat('Var Para 1% là: ', mean(returns.MVP)-sd(returns.MVP)*2.326))
+print(cat('Var Para 5% là: ' , mean(returns.MVP)-sd(returns.MVP)*1.645))
+print(cat('Var Histor 1% là: ', quantile(returns.MVP, 0.01)))
+print(cat('Var Histor 5% là: ', quantile(returns.MVP, 0.05)))
+
+# Này plot(model) có ==========================================================
+forecast <- ugarchforecast(model, n.ahead = 1)
+confidence_level <- 0.99
+z_alpha <- qnorm(1 - confidence_level)
+VaR <- z_alpha * forecast@forecast$sigmaFor
+
+VaR_historical <- -abs(z_alpha * sigma(model))
+VaR_data <- data.frame(Date = index(returns), Actual_Returns = as.numeric(returns), VaR = VaR_historical)
+
+ggplot(VaR_data, aes(x = Date)) +
+  geom_line(aes(y = Actual_Returns, color = "AR")) +
+  geom_line(aes(y = VaR, color = "VaR Limit")) +
+  scale_color_manual(values = c("darkgray", "brown")) +
+  labs(title = "VaR và Lợi nhuận GARCH",
+       x = "Year",
+       y = "Value",
+       color = "In4") +
+  theme_minimal()
+
+exceedances <- sum(VaR_data$Actual_Returns < VaR_data$VaR)
+cat("Số lần vượt quá VaR:", exceedances, "\nTỷ lệ vượt quá:", exceedances / nrow(VaR_data) * 100, "%")
